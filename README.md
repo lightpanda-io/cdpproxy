@@ -4,7 +4,7 @@ cdpproxy is a websocket proxy to logs all messages on cdp connections.
 
 ## Install and build
 
-The program requires [Go](https://go.dev] installed.
+The program requires [Go](https://go.dev) installed.
 
 ```console
 $ go build
@@ -37,6 +37,8 @@ const browser = await puppeteer.connect({
 
 Example with Playwright
 ```js
+'use scrict'
+
 import { chromium } from 'playwright';
 
 const browser = await chromium.connectOverCDP({

@@ -56,8 +56,7 @@ Start cdpproxy and run your cdp script to display messages.
 ```
 $ ./cdpproxy
 > {"method":"Browser.getVersion","id":1}
-< {"id":1,"result":{"protocolVersion":"1.3","product":"Chrome/124.0.6367.29","revision":"@9e6ded5ac1ff5e38d930ae52bd9aec09bd1a68e4","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
-) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","jsVersion":"12.4.254.8"}}
+< {"id":1,"result":{"protocolVersion":"1.3","product":"Chrome/124.0.6367.29","revision":"@9e6ded5ac1ff5e38d930ae52bd9aec09bd1a68e4","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","jsVersion":"12.4.254.8"}}
 > {"method":"Target.getBrowserContexts","id":2}
 < {"id":2,"result":{"browserContextIds":[]}}
 ```
@@ -75,8 +74,7 @@ Start cdpproxy with the ws url and run your cdp script to display messages.
 ```
 $ ./cdpproxy ws://127.0.0.1:9223/devtools/browser/696603b7-6ac7-4f0a-99ad-cd356c7f8b7d
 > {"method":"Browser.getVersion","id":1}
-< {"id":1,"result":{"protocolVersion":"1.3","product":"Chrome/124.0.6367.29","revision":"@9e6ded5ac1ff5e38d930ae52bd9aec09bd1a68e4","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
-) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","jsVersion":"12.4.254.8"}}
+< {"id":1,"result":{"protocolVersion":"1.3","product":"Chrome/124.0.6367.29","revision":"@9e6ded5ac1ff5e38d930ae52bd9aec09bd1a68e4","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","jsVersion":"12.4.254.8"}}
 > {"method":"Target.getBrowserContexts","id":2}
 < {"id":2,"result":{"browserContextIds":[]}}
 > {"method":"Target.setDiscoverTargets","params":{"discover":true,"filter":[{}]},"id":3}

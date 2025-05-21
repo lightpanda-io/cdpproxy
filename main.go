@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -93,6 +94,7 @@ func run(_ context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "ws server listening on ws://%s\n", *addr)
+	fmt.Fprintf(os.Stderr, "ws server forwarding to: %s\n", cdpurl)
 	http.HandleFunc("/", ws(cdpurl))
 
 	return http.ListenAndServe(*addr, nil)
@@ -100,17 +102,28 @@ func run(_ context.Context, args []string, stdout, stderr io.Writer) error {
 
 func ws(cdpurl string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			slog.Error("ws upgrade", slog.Any("err", err))
-			return
-		}
-		defer ws.Close()
+		if websocket.IsWebSocketUpgrade(r) {
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				slog.Error("ws upgrade", slog.Any("err", err))
+				return
+			}
+			defer ws.Close()
 
-		if err := proxy(r.Context(), cdpurl, ws); err != nil {
-			slog.Error("proxy", slog.Any("err", err))
+			if err := proxy(r.Context(), cdpurl, ws); err != nil {
+				slog.Error("proxy", slog.Any("err", err))
+				return
+			}
+			return
+		} else {
+			// If not a WebSocket upgrade request, handle it as an HTTP request
+			// We may expect requests like /json/list or /json/version
+			if err := httpProxy(cdpurl, w, r); err != nil {
+				slog.Error("httpProxy", slog.Any("err", err))
+			}
 			return
 		}
+
 	}
 }
 
@@ -173,6 +186,50 @@ func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn) error {
 	case <-ctx.Done():
 		return nil
 	}
+}
+
+func httpProxy(cdpurl string, w http.ResponseWriter, r *http.Request) error {
+	httpurl := strings.Replace(cdpurl, "ws://", "http://", 1)
+
+	fmt.Print("> http ", r.Method, " ", r.URL.Path)
+	tee_body := io.TeeReader(r.Body, os.Stdout) // Read to both Stdout and the new request
+
+	// Create a new request to the target
+	targetURL := httpurl + r.URL.Path
+	req, err := http.NewRequest(r.Method, targetURL, tee_body)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header = r.Header.Clone()
+	req.Header.Del("Content-Length") // Let Go set it
+
+	// Send the request
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to reach backend: %w", err)
+	}
+	defer resp.Body.Close()
+	fmt.Println() // End the log line after the body is streamed
+
+	// Copy response headers and status
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+
+	fmt.Print("< http ", resp.StatusCode, " ")
+	mw := io.MultiWriter(w, os.Stdout)
+	_, err = io.Copy(mw, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+	fmt.Println()
+
+	return nil
 }
 
 // env returns the env value corresponding to the key or the default string.

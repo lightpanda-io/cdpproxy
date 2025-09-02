@@ -16,12 +16,15 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -54,14 +57,18 @@ const (
 
 var cdpurl = CdpUrlDefault
 
-func run(_ context.Context, args []string, stdout, stderr io.Writer) error {
+func run(_ context.Context, args []string, _, stderr io.Writer) error {
 	// declare runtime flag parameters.
 	flags := flag.NewFlagSet(args[0], flag.ExitOnError)
 	flags.SetOutput(stderr)
 
 	var (
-		verbose = flags.Bool("verbose", false, "enable debug log level")
-		addr    = flags.String("addr", env("CDP_ADDRESS", AddressDefault), "api address listen to, used only when daemon is true")
+		level     = flags.String("level", "info", "verbosity (debug, info, warn, error)")
+		filter    = flags.Bool("filter", false, "filter output")
+		nonetwork = flags.Bool("no-network", false, "filter out Network events, --filter must be set")
+		nolog     = flags.Bool("no-log", false, "filter out Log events, --filter must be set")
+		noid      = flags.Bool("no-id", false, "filter out message's ids, --filter must be set")
+		addr      = flags.String("addr", env("CDP_ADDRESS", AddressDefault), "api address listen to, used only when daemon is true")
 	)
 
 	// usage func declaration.
@@ -78,9 +85,25 @@ func run(_ context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	if *verbose {
+	switch *level {
+	case "debug":
 		slog.SetLogLoggerLevel(slog.LevelDebug)
+	case "info":
+		slog.SetLogLoggerLevel(slog.LevelInfo)
+	case "warn":
+		slog.SetLogLoggerLevel(slog.LevelWarn)
+	case "error":
+		slog.SetLogLoggerLevel(slog.LevelError)
+	default:
+		return fmt.Errorf("invalid log level")
 	}
+
+	logf := logFunc(logFuncOpt{
+		Filter:    *filter,
+		NoNetwork: *nonetwork,
+		NoLog:     *nolog,
+		NoId:      *noid,
+	})
 
 	args = flags.Args()
 
@@ -93,12 +116,12 @@ func run(_ context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "ws server listening on ws://%s\n", *addr)
-	http.HandleFunc("/", ws(cdpurl))
+	http.HandleFunc("/", ws(cdpurl, logf))
 
 	return http.ListenAndServe(*addr, nil)
 }
 
-func ws(cdpurl string) http.HandlerFunc {
+func ws(cdpurl string, logf LogFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -107,14 +130,101 @@ func ws(cdpurl string) http.HandlerFunc {
 		}
 		defer ws.Close()
 
-		if err := proxy(r.Context(), cdpurl, ws); err != nil {
+		if err := proxy(r.Context(), cdpurl, ws, logf); err != nil {
 			slog.Error("proxy", slog.Any("err", err))
 			return
 		}
 	}
 }
 
-func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn) error {
+type LogFunc = func(source string, data []byte)
+
+type logFuncOpt = struct {
+	Filter bool
+	// filter Network events
+	NoNetwork bool
+	// filter Log events
+	NoLog bool
+	NoId  bool
+}
+
+func logFunc(opt logFuncOpt) LogFunc {
+	if opt.Filter == false {
+		// no filter
+		return func(source string, data []byte) {
+			switch source {
+			case "wswrite":
+				fmt.Println("< " + string(data))
+			case "wsread":
+				fmt.Println("> " + string(data))
+			}
+		}
+	}
+
+	return func(source string, data []byte) {
+		data = cleanup(opt, "root", data)
+		if data == nil {
+			// skip the row
+			return
+		}
+
+		switch source {
+		case "wswrite":
+			fmt.Println("< " + string(data))
+		case "wsread":
+			fmt.Println("> " + string(data))
+		}
+	}
+}
+
+func cleanup(opt logFuncOpt, k string, data []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		slog.Error("unmarshal json", slog.Any("err", err), slog.String("key", k))
+		return nil
+	}
+	for k, v := range m {
+		if strings.HasSuffix(k, "Id") {
+			m[k] = []byte("\"\"")
+			continue
+		}
+		switch k {
+		case "method":
+			if opt.NoNetwork || opt.NoLog {
+				var method string
+				if err := json.Unmarshal(v, &method); err != nil {
+					slog.Error("unmarshal json", slog.Any("err", err), slog.String("key", k))
+					return nil
+				}
+				if opt.NoNetwork && strings.HasPrefix(method, "Network.") {
+					return nil
+				}
+				if opt.NoLog && strings.HasPrefix(method, "Log.") {
+					return nil
+				}
+			}
+		case "id":
+			if opt.NoId {
+				m[k] = []byte("\"\"")
+			}
+		case "params", "result", "initiator", "context", "targetInfo", "frame":
+			m[k] = json.RawMessage(cleanup(opt, k, v))
+		case "arguments", "request", "response", "timestamp", "stack", "headers":
+			m[k] = []byte("\"\"")
+		case "expression", "functionDeclaration", "value":
+			m[k] = []byte(fmt.Sprintf("\"%x\"", md5.Sum([]byte(v))))
+		}
+	}
+
+	raw, err := json.Marshal(m)
+	if err != nil {
+		slog.Error("marshal json", slog.Any("err", err))
+		return nil
+	}
+	return raw
+}
+
+func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn, logf LogFunc) error {
 	conn, _, err := websocket.DefaultDialer.Dial(cdpurl, nil)
 	if err != nil {
 		return fmt.Errorf("ws conn: %w", err)
@@ -138,7 +248,7 @@ func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn) error {
 				slog.Error("conn read", slog.Any("err", err))
 				return
 			}
-			fmt.Println("< " + string(msg))
+			logf("wswrite", msg)
 
 			if err = ws.WriteMessage(mt, msg); err != nil {
 				slog.Error("ws write", slog.Any("err", err))
@@ -161,7 +271,8 @@ func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn) error {
 				slog.Error("ws read", slog.Any("err", err))
 				return
 			}
-			fmt.Println("> " + string(msg))
+			logf("wsread", msg)
+
 			if err = conn.WriteMessage(mt, msg); err != nil {
 				slog.Error("conn write", slog.Any("err", err))
 				return

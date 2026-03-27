@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -68,6 +69,8 @@ func run(_ context.Context, args []string, _, stderr io.Writer) error {
 		nonetwork = flags.Bool("no-network", false, "filter out Network events, --filter must be set")
 		nolog     = flags.Bool("no-log", false, "filter out Log events, --filter must be set")
 		noid      = flags.Bool("no-id", false, "filter out message's ids, --filter must be set")
+		timestamp = flags.Bool("timestamp", false, "add timestamp info to messages")
+		connid    = flags.Bool("connid", false, "add client connid info to messages")
 		addr      = flags.String("addr", env("CDP_ADDRESS", AddressDefault), "api address listen to, used only when daemon is true")
 	)
 
@@ -103,6 +106,8 @@ func run(_ context.Context, args []string, _, stderr io.Writer) error {
 		NoNetwork: *nonetwork,
 		NoLog:     *nolog,
 		NoId:      *noid,
+		Timestamp: *timestamp,
+		ConnId:    *connid,
 	})
 
 	args = flags.Args()
@@ -123,6 +128,7 @@ func run(_ context.Context, args []string, _, stderr io.Writer) error {
 
 func ws(cdpurl string, logf LogFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Write(os.Stderr)
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			slog.Error("ws upgrade", slog.Any("err", err))
@@ -137,31 +143,40 @@ func ws(cdpurl string, logf LogFunc) http.HandlerFunc {
 	}
 }
 
-type LogFunc = func(source string, data []byte)
+type LogFunc = func(source, connid string, data []byte)
 
 type logFuncOpt = struct {
 	Filter bool
 	// filter Network events
 	NoNetwork bool
 	// filter Log events
-	NoLog bool
-	NoId  bool
+	NoLog     bool
+	NoId      bool
+	Timestamp bool
+	ConnId    bool
 }
 
 func logFunc(opt logFuncOpt) LogFunc {
 	if opt.Filter == false {
 		// no filter
-		return func(source string, data []byte) {
+		return func(source, connid string, data []byte) {
 			switch source {
 			case "wswrite":
-				fmt.Println("< " + string(data))
+				fmt.Print("< ")
 			case "wsread":
-				fmt.Println("> " + string(data))
+				fmt.Print("> ")
 			}
+			if opt.ConnId {
+				fmt.Printf("%s ", connid)
+			}
+			if opt.Timestamp {
+				fmt.Printf("%v ", time.Now())
+			}
+			fmt.Println(string(data))
 		}
 	}
 
-	return func(source string, data []byte) {
+	return func(source, connid string, data []byte) {
 		data = cleanup(opt, "root", data)
 		if data == nil {
 			// skip the row
@@ -170,10 +185,17 @@ func logFunc(opt logFuncOpt) LogFunc {
 
 		switch source {
 		case "wswrite":
-			fmt.Println("< " + string(data))
+			fmt.Print("< ")
 		case "wsread":
-			fmt.Println("> " + string(data))
+			fmt.Print("> ")
 		}
+		if opt.ConnId {
+			fmt.Printf("%s ", connid)
+		}
+		if opt.Timestamp {
+			fmt.Printf("%v ", time.Now())
+		}
+		fmt.Printf(string(data))
 	}
 }
 
@@ -225,6 +247,8 @@ func cleanup(opt logFuncOpt, k string, data []byte) []byte {
 }
 
 func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn, logf LogFunc) error {
+	connid := ws.RemoteAddr().String()
+
 	conn, _, err := websocket.DefaultDialer.Dial(cdpurl, nil)
 	if err != nil {
 		return fmt.Errorf("ws conn: %w", err)
@@ -245,13 +269,13 @@ func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn, logf LogFunc)
 
 			mt, msg, err := conn.ReadMessage()
 			if err != nil {
-				slog.Error("conn read", slog.Any("err", err))
+				slog.Error("conn read", slog.Any("err", err), slog.String("id", connid))
 				return
 			}
-			logf("wswrite", msg)
+			logf("wswrite", connid, msg)
 
 			if err = ws.WriteMessage(mt, msg); err != nil {
-				slog.Error("ws write", slog.Any("err", err))
+				slog.Error("ws write", slog.Any("err", err), slog.String("id", connid))
 				return
 			}
 		}
@@ -268,13 +292,13 @@ func proxy(ctx context.Context, cdpurl string, ws *websocket.Conn, logf LogFunc)
 
 			mt, msg, err := ws.ReadMessage()
 			if err != nil {
-				slog.Error("ws read", slog.Any("err", err))
+				slog.Error("ws read", slog.Any("err", err), slog.String("id", connid))
 				return
 			}
-			logf("wsread", msg)
+			logf("wsread", connid, msg)
 
 			if err = conn.WriteMessage(mt, msg); err != nil {
-				slog.Error("conn write", slog.Any("err", err))
+				slog.Error("conn write", slog.Any("err", err), slog.String("id", connid))
 				return
 			}
 		}

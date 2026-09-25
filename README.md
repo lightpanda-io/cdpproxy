@@ -49,7 +49,7 @@ const browser = await chromium.connectOverCDP({
 
 Start Lightpanda browser.
 ```
-$ ./ligthpanda serve --port 9223
+$ ./lightpanda serve --port 9223
 ```
 
 Start cdpproxy and run your cdp script to display messages.
